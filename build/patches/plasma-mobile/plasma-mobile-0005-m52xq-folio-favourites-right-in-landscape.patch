@@ -1,0 +1,13 @@
+--- a/containments/homescreens/folio/homescreenstate.cpp
++++ b/containments/homescreens/folio/homescreenstate.cpp
+@@ -300,7 +300,9 @@ void HomeScreenState::setPageOrientation
+ HomeScreenState::FavouritesBarLocation HomeScreenState::favouritesBarLocation() const
+ {
+     // TODO need to determine screen rotation and bottom of screen to have Left and Right accordingly
+-    return m_viewHeight < VERTICAL_FAVOURITES_BAR_THRESHOLD && m_viewWidth > m_viewHeight ? Right : Bottom;
++    // m52xq: in landscape the favourites bar is always on the right side: at the phone's scale (2.65) the landscape
++    // view is 408 px high, over the 400 px threshold, and the bar at the bottom covered the lowest row of icons
++    return m_viewWidth > m_viewHeight ? Right : Bottom;
+ }
+ 
+ int HomeScreenState::pageRows() const

@@ -1,0 +1,145 @@
+From: Asdlerto Korry <korryasdlerto@gmail.com>
+Subject: [PATCH] m52xq: display rotation from iio-sensor-proxy when there is no Mutter DisplayConfig
+
+Under KWin (Plasma) org.gnome.Mutter.DisplayConfig has no owner, so Snapshot never learned the display rotation
+and the viewfinder lay on its side in landscape. Follow the accelerometer of iio-sensor-proxy then (the same
+sensor the shell rotates the display by), mapping the orientation as Phosh's rotation manager does.
+---
+--- a/aperture/src/viewfinder.rs	2026-11-21 03:48:18.851531196 +0200
++++ b/aperture/src/viewfinder.rs	2026-11-21 03:48:52.921987717 +0200
+@@ -268,6 +268,9 @@
+         /// m52xq r116: taginject after libcamerasrc (the image-orientation tag PipeWire gives, libcamerasrc does not)
+         pub m52xq_lc_tag: RefCell<Option<gst::Element>>,
+         pub m52xq_display_proxy: RefCell<Option<gio::DBusProxy>>,
++        /// m52xq (2026-11-21): iio-sensor-proxy, when no org.gnome.Mutter.DisplayConfig (Plasma/KWin)
++        pub m52xq_sensor_proxy: RefCell<Option<gio::DBusProxy>>,
++        pub m52xq_accel_seen: Cell<bool>,
+ 
+         /// m52xq: pinch zoom of the viewfinder (1..4); the image and video branches crop the same part
+         pub m52xq_zoom: std::sync::Arc<std::sync::atomic::AtomicU64>,
+@@ -1045,6 +1048,13 @@
+                             }
+                         ),
+                     );
++                    if proxy.name_owner().is_none() {
++                        // m52xq (2026-11-21): KWin (Plasma) has no org.gnome.Mutter.DisplayConfig - follow the
++                        // accelerometer of iio-sensor-proxy instead (the same sensor the shell rotates the display by)
++                        log::info!("m52xq: no DisplayConfig owner, display rotation from iio-sensor-proxy");
++                        obj.m52xq_watch_accelerometer();
++                        return;
++                    }
+                     obj.imp().m52xq_display_proxy.replace(Some(proxy));
+                     obj.m52xq_update_transform();
+                 }
+@@ -1075,6 +1085,100 @@
+                         return;
+                     }
+                     let transform = logical.child_value(0).child_value(3).get::<u32>().unwrap_or(0) & 3;
++                    obj.m52xq_apply_transform(transform);
++                }
++            ),
++        );
++    }
++
++    /// m52xq (2026-11-21): display rotation from the accelerometer (iio-sensor-proxy) when the compositor has no
++    /// org.gnome.Mutter.DisplayConfig. Orientation -> transform as Phosh's rotation manager does: normal 0,
++    /// left-up 90 (1), bottom-up 180 (2), right-up 270 (3); "undefined" (phone flat) keeps the last one.
++    fn m52xq_watch_accelerometer(&self) {
++        gio::DBusProxy::for_bus(
++            gio::BusType::System,
++            gio::DBusProxyFlags::NONE,
++            None,
++            "net.hadess.SensorProxy",
++            "/net/hadess/SensorProxy",
++            "net.hadess.SensorProxy",
++            None::<&gio::Cancellable>,
++            glib::clone!(
++                #[weak(rename_to = obj)]
++                self,
++                move |res| {
++                    let proxy = match res {
++                        Ok(proxy) => proxy,
++                        Err(err) => {
++                            log::info!("m52xq: no iio-sensor-proxy: {err}");
++                            return;
++                        }
++                    };
++                    proxy.connect_local(
++                        "g-properties-changed",
++                        false,
++                        glib::clone!(
++                            #[weak]
++                            obj,
++                            #[upgrade_or_default]
++                            move |_| {
++                                obj.m52xq_update_transform_from_accelerometer();
++                                None
++                            }
++                        ),
++                    );
++                    proxy.call(
++                        "ClaimAccelerometer",
++                        None,
++                        gio::DBusCallFlags::NONE,
++                        -1,
++                        None::<&gio::Cancellable>,
++                        glib::clone!(
++                            #[weak]
++                            obj,
++                            move |res| {
++                                if let Err(err) = res {
++                                    log::info!("m52xq: ClaimAccelerometer: {err}");
++                                }
++                                obj.m52xq_update_transform_from_accelerometer();
++                            }
++                        ),
++                    );
++                    obj.imp().m52xq_sensor_proxy.replace(Some(proxy));
++                }
++            ),
++        );
++    }
++
++    fn m52xq_update_transform_from_accelerometer(&self) {
++        let Some(proxy) = self.imp().m52xq_sensor_proxy.borrow().clone() else {
++            return;
++        };
++        let orientation = proxy
++            .cached_property("AccelerometerOrientation")
++            .and_then(|v| v.get::<String>())
++            .unwrap_or_default();
++        let transform = match orientation.as_str() {
++            "normal" => 0,
++            "left-up" => 1,
++            "bottom-up" => 2,
++            "right-up" => 3,
++            _ => return,
++        };
++        if transform == self.imp().m52xq_display_transform.get() && self.imp().m52xq_accel_seen.get() {
++            return;
++        }
++        self.imp().m52xq_accel_seen.set(true);
++        log::info!("m52xq: accelerometer {orientation} -> display transform {transform}");
++        self.m52xq_apply_transform(transform);
++    }
++
++    /// m52xq: turn the camera frames back by the display rotation (transform 0..3)
++    fn m52xq_apply_transform(&self, transform: u32) {
++        let obj = self;
++        {
++            {
++                {
+                     obj.imp().m52xq_display_transform.set(transform);
+                     // turn the camera frames back by the display rotation; M52XQ_SNAPSHOT_FLIP_DIR=1 swaps the
+                     // 90 degree directions (for testing on other devices)
+@@ -1155,8 +1259,8 @@
+                     log::info!("m52xq: recording frames {video_direction}, orientation tag {orientation}");
+                     log::info!("m52xq: picture frames {image_direction}");
+                 }
+-            ),
+-        );
++            }
++        }
+     }
+ 
+     fn m52xq_zoom(&self) -> f64 {

@@ -1,0 +1,14 @@
+# M52XQ (Debian + Phosh): defaults that postmarketOS / Mobian set elsewhere.
+# On-screen keyboard on (otherwise no keyboard for the Wi-Fi password), automatic brightness off.
+[org.gnome.desktop.a11y.applications]
+screen-keyboard-enabled=true
+
+[org.gnome.settings-daemon.plugins.power]
+ambient-enabled=false
+
+# Sleep like on the postmarketOS port: screen off after 60 s, suspend after 120 s idle on battery.
+[org.gnome.desktop.session]
+idle-delay=uint32 60
+
+[org.gnome.settings-daemon.plugins.power]
+sleep-inactive-battery-timeout=120

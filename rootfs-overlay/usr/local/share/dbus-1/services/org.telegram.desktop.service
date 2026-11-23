@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=org.telegram.desktop
+# m52xq (Debian 2026-11-19, as pmOS Phosh 2026-11-17): GLib network monitor on kernel routes only (netlink; "base" left Telegram offline on Debian) - the NetworkManager one with its "network changed" (wake-up from a dark wake:
+# modem modes, BT, GPS given back) made Telegram decline a ringing call at the moment of unlocking
+Exec=/usr/bin/env GIO_USE_NETWORK_MONITOR=netlink /usr/bin/telegram-desktop

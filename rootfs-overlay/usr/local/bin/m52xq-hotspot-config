@@ -1,0 +1,114 @@
+#!/usr/bin/python3
+# M52XQ (Debian Plasma, 2026-11-21): name and password of the Wi-Fi hotspot (m52xq-hotspot.service, /etc/m52xq-hotspot.conf)
+# for the settings window of the "Hotspot" tile (long press, /usr/local/share/m52xq/hotspot-settings.qml).
+#   m52xq-hotspot-config get                  (user) -> two lines: ssid, passphrase
+#   m52xq-hotspot-config set <ssid> <pass>    (user) both URI-encoded by the window (encodeURIComponent: no shell characters);
+#                                              checked, written to ~/.config/m52xq-hotspot-new, applied by m52xq-hotspot-apply.service
+#   m52xq-hotspot-config apply                (root, m52xq-hotspot-apply.service) -> /etc/m52xq-hotspot.conf, restarts a running hotspot
+# The other lines of the conf (comments, sta_24) are kept. m52xq-hotspot-run SOURCES the conf as root (". /etc/m52xq-hotspot.conf"):
+# the values are written in single quotes (' as '\''), so a name like x$(cmd) or with spaces stays plain text.
+import os
+import shlex
+import subprocess
+import sys
+import urllib.parse
+
+CONF = '/etc/m52xq-hotspot.conf'
+REQ = '/home/user/.config/m52xq-hotspot-new'
+
+
+def check(ssid, pw):
+    if not 1 <= len(ssid.encode()) <= 32:
+        return 'The name must be 1 to 32 bytes long'
+    if not 8 <= len(pw) <= 63 or any(not (32 <= ord(c) < 127) for c in pw):
+        return 'The password must be 8 to 63 ASCII characters'
+    if any(ord(c) < 32 or ord(c) == 127 for c in ssid):
+        return 'The name must not contain control characters'
+    return None
+
+
+def read_conf():
+    vals = {}
+    try:
+        with open(CONF) as f:
+            for line in f:
+                k, sep, v = line.rstrip('\n').partition('=')
+                if sep and not k.startswith('#'):
+                    try:
+                        w = shlex.split(v)
+                        vals[k] = w[0] if w else ''
+                    except ValueError:
+                        vals[k] = v
+    except OSError:
+        pass
+    return vals
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ''
+    if cmd == 'get':
+        v = read_conf()
+        print(v.get('ssid', ''))
+        print(v.get('passphrase', ''))
+    elif cmd == 'set' and len(sys.argv) == 4:
+        ssid = urllib.parse.unquote(sys.argv[2])
+        pw = urllib.parse.unquote(sys.argv[3])
+        err = check(ssid, pw)
+        if err:
+            print('error: ' + err)
+            return 1
+        os.makedirs(os.path.dirname(REQ), exist_ok=True)
+        fd = os.open(REQ + '.tmp', os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(ssid + '\n' + pw + '\n')
+        os.replace(REQ + '.tmp', REQ)
+        r = subprocess.run(['systemctl', 'start', 'm52xq-hotspot-apply.service'])
+        print('ok' if r.returncode == 0 else 'error: could not apply (m52xq-hotspot-apply.service)')
+        return r.returncode
+    elif cmd == 'apply' and os.geteuid() == 0:
+        try:
+            st = os.lstat(REQ)
+            if not os.path.isfile(REQ) or os.path.islink(REQ) or st.st_size > 512:
+                return 1
+            with open(REQ) as f:
+                lines = f.read().split('\n')
+        except OSError:
+            return 0
+        finally:
+            try:
+                os.unlink(REQ)
+            except OSError:
+                pass
+        if len(lines) < 2 or check(lines[0], lines[1]):
+            print('m52xq-hotspot-config: rejected request')
+            return 1
+        out, seen = [], set()
+        try:
+            with open(CONF) as f:
+                old = f.read().split('\n')
+        except OSError:
+            old = []
+        for line in old:
+            k = line.partition('=')[0]
+            if k == 'ssid':
+                line = 'ssid=' + shlex.quote(lines[0]); seen.add(k)
+            elif k == 'passphrase':
+                line = 'passphrase=' + shlex.quote(lines[1]); seen.add(k)
+            out.append(line)
+        if 'ssid' not in seen:
+            out.insert(0, 'ssid=' + shlex.quote(lines[0]))
+        if 'passphrase' not in seen:
+            out.insert(1, 'passphrase=' + shlex.quote(lines[1]))
+        with open(CONF + '.tmp', 'w') as f:
+            f.write('\n'.join(out).rstrip('\n') + '\n')
+        os.chmod(CONF + '.tmp', 0o644)
+        os.replace(CONF + '.tmp', CONF)
+        print('m52xq-hotspot-config: new name / password saved')
+        subprocess.run(['systemctl', 'try-restart', 'm52xq-hotspot.service'])
+    else:
+        print('usage: m52xq-hotspot-config get | set <ssid> <pass> | apply', file=sys.stderr)
+        return 2
+    return 0
+
+
+sys.exit(main())

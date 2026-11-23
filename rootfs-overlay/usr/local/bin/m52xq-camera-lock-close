@@ -1,0 +1,96 @@
+#!/usr/bin/python3
+# M52XQ (Debian Plasma, 2026-11-21): close GNOME Snapshot when the screen is locked, unless it records a video.
+# Ported 1:1 from m52xq-idle-suspend of Debian Phosh в6 (on_screen_locked and its helpers, below unchanged): an open camera
+# kept the phone awake for the whole night (Snapshot inhibits the idle session while its window is open). Only the lock
+# signal differs: Plasma (kscreenlocker) emits org.freedesktop.ScreenSaver.ActiveChanged instead of org.gnome.ScreenSaver.
+import os
+import signal
+
+import gi
+from gi.repository import Gio, GLib
+
+
+def log(msg):
+    print('m52xq-camera-lock-close: ' + msg, flush=True)
+
+
+session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+
+
+def sync_call(conn, bus, path, iface, method, args=None, sig=None, timeout=5000):
+    return conn.call_sync(bus, path, iface, method, GLib.Variant(sig, args) if sig else None, None,
+                          Gio.DBusCallFlags.NONE, timeout, None)
+
+
+SNAPSHOT_VIDEO_EXT = ('.mp4', '.mkv', '.webm', '.mov')
+
+
+def snapshot_pid():
+    """PID of GNOME Snapshot (D-Bus service /usr/bin/snapshot --gapplication-service) or None."""
+    for d in os.listdir('/proc'):
+        if not d.isdigit():
+            continue
+        try:
+            with open('/proc/%s/cmdline' % d, 'rb') as f:
+                argv = f.read().split(b'\0')
+        except OSError:
+            continue
+        if argv and argv[0].endswith(b'/snapshot'):
+            return int(d)
+    return None
+
+
+def snapshot_recording(pid):
+    """Snapshot writes a video file right now (an open file in ~/Videos or with a video extension)."""
+    try:
+        fds = os.listdir('/proc/%d/fd' % pid)
+    except OSError:
+        return False
+    for fd in fds:
+        try:
+            t = os.readlink('/proc/%d/fd/%s' % (pid, fd))
+        except OSError:
+            continue
+        if t.startswith('/home/') and ('/Videos/' in t or t.lower().endswith(SNAPSHOT_VIDEO_EXT)):
+            return True
+    return False
+
+
+def snapshot_kill_if_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    log('Snapshot %d still running 3 s after quit: SIGTERM' % pid)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+    return False
+
+
+def on_screen_locked(conn, sender, path, iface, name, params):
+    """m52xq: an open camera kept the phone awake for the whole night (Snapshot inhibits
+    the idle session while its window is open: m52xq-idle-suspend «not suspending (inhibited by org.gnome.Snapshot)»,
+    no sleep at all, camera block and sensor on). When the screen is locked, Snapshot is closed, unless it records a video."""
+    if not params.unpack()[0]:
+        return
+    pid = snapshot_pid()
+    if not pid:
+        return
+    if snapshot_recording(pid):
+        log('screen locked: Snapshot %d records a video, kept open' % pid)
+        return
+    log('screen locked: closing Snapshot %d (camera off)' % pid)
+    try:
+        sync_call(session, 'org.gnome.Snapshot', '/org/gnome/Snapshot', 'org.gtk.Actions', 'Activate',
+                  ('quit', [], {}), '(sava{sv})')
+    except GLib.Error as e:
+        log('Snapshot quit: %s' % e.message)
+    GLib.timeout_add_seconds(3, snapshot_kill_if_alive, pid)
+
+
+session.signal_subscribe(None, 'org.freedesktop.ScreenSaver', 'ActiveChanged', None, None,
+                         Gio.DBusSignalFlags.NONE, on_screen_locked)
+log('watching the screen lock')
+GLib.MainLoop().run()

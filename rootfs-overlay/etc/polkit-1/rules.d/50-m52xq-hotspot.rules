@@ -1,0 +1,10 @@
+// M52XQ: the user may start and stop the hotspot service from the quick setting without a password
+// Debian Plasma (2026-11-21): and start m52xq-hotspot-apply.service (the settings window of the tile saves name / password)
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        (action.lookup("unit") == "m52xq-hotspot.service" ||
+         (action.lookup("unit") == "m52xq-hotspot-apply.service" && action.lookup("verb") == "start")) &&
+        subject.user == "user") {
+        return polkit.Result.YES;
+    }
+});

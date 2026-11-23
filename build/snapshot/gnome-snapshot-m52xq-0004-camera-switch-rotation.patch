@@ -1,0 +1,22 @@
+From: Asdlerto Korry <korryasdlerto@gmail.com>
+Subject: [PATCH] m52xq: turn the viewfinder again after a camera switch without Mutter DisplayConfig
+
+Under KWin (Plasma) m52xq_update_transform() returned at once (no DisplayConfig proxy), so a camera switch kept the
+frame direction of the previous camera: in landscape the back cameras need 90l and the front one 90r, the viewfinder
+was upside down until the phone was turned. Apply the last accelerometer rotation again for the new camera.
+---
+--- a/aperture/src/viewfinder.rs	2026-11-22 22:04:49.531794078 +0200
++++ b/aperture/src/viewfinder.rs	2026-11-22 22:04:49.551797454 +0200
+@@ -1064,6 +1064,12 @@
+ 
+     fn m52xq_update_transform(&self) {
+         let Some(proxy) = self.imp().m52xq_display_proxy.borrow().clone() else {
++            // m52xq (2026-11-22): no DisplayConfig (Plasma/KWin) - the rotation comes from the accelerometer, which only
++            // reports a change of the phone's position. A camera switch (front <-> back: landscape 90r <-> 90l) must turn
++            // the frames again with the last known rotation, or the viewfinder stays upside down until the phone is turned.
++            if self.imp().m52xq_sensor_proxy.borrow().is_some() && self.imp().m52xq_accel_seen.get() {
++                self.m52xq_apply_transform(self.imp().m52xq_display_transform.get());
++            }
+             return;
+         };
+         proxy.call(

@@ -1,0 +1,14 @@
+[Unit]
+Description=M52XQ: Telegram / VoIP call audio route (earpiece while a call is answered, loud speaker for the ring)
+After=graphical-session.target
+# Debian (2026-11-19): only the phone user; the greeter (_greetd, phrog) has a graphical session too and ran a second copy
+# that polled pactl every second all night ("rm: cannot remove /run/user/10000/m52xq-voip-active: Permission denied")
+ConditionUser=user
+
+[Service]
+ExecStart=/usr/local/bin/m52xq-voip-audio
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

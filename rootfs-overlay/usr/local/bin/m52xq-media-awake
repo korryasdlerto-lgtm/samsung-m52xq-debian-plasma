@@ -1,0 +1,26 @@
+#!/bin/sh
+# M52XQ (Debian Plasma, 2026-11-14): no sleep while an app plays sound (browser, music, video). PowerDevil suspends after
+# 120 s of no input even while YouTube plays with the screen off; on pmOS Phosh m52xq-idle-suspend did not suspend while an
+# MPRIS player was "Playing". Here: while any PulseAudio/PipeWire stream is not corked, a logind "sleep" block inhibitor is held
+# (PowerDevil's suspend is then refused); it is dropped as soon as nothing plays. Event driven (pactl subscribe), no polling.
+playing() { pactl list sink-inputs 2>/dev/null | grep -q "Corked: no"; }
+{ echo init; exec pactl subscribe; } | {
+	pid=
+	while read -r line; do
+		case "$line" in
+		init | *sink-input*) ;;
+		*) continue ;;
+		esac
+		if playing; then
+			if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+				systemd-inhibit --what=sleep --mode=block --who=m52xq-media-awake --why="sound is playing" sleep infinity &
+				pid=$!
+				echo "m52xq-media-awake: sound plays: sleep inhibited"
+			fi
+		elif [ -n "$pid" ]; then
+			kill "$pid" 2>/dev/null
+			pid=
+			echo "m52xq-media-awake: nothing plays: sleep allowed"
+		fi
+	done
+}

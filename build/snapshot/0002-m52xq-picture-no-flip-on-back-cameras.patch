@@ -1,0 +1,54 @@
+Description: M52XQ: picture branch of the back cameras not turned with the viewfinder (Wide/Macro landscape photos lay a quarter turn off)
+Author: Asdlerto Korry <korryasdlerto@gmail.com>
+--- a/aperture/src/viewfinder.rs
++++ b/aperture/src/viewfinder.rs
+@@ -251,6 +251,8 @@
+         pub m52xq_flips: RefCell<Vec<gst::Element>>,
+         /// m52xq r104: the flip of the recording branch and the orientation tag written instead of a quarter turn
+         pub m52xq_video_flip: RefCell<Option<gst::Element>>,
++        /// m52xq (Debian 2026-11-19): the flip of the picture branch (camerabin image-filter)
++        pub m52xq_image_flip: RefCell<Option<gst::Element>>,
+         pub m52xq_video_orientation: Cell<&'static str>,
+         /// m52xq r110: "4K Video" setting and the video capture mode (4K only when both are on)
+         pub m52xq_video_4k: Cell<bool>,
+@@ -718,6 +720,7 @@
+             let (image_filter, flip_image, crop_image) =
+                 super::m52xq_flip_bin(&videoconvert_image, &self.m52xq_zoom);
+             camerabin.set_property("image-filter", &image_filter);
++            self.m52xq_image_flip.replace(Some(flip_image.clone()));
+             self.m52xq_flips.borrow_mut().push(flip_image);
+             self.m52xq_crops.borrow_mut().push(crop_image);
+ 
+@@ -1112,6 +1115,15 @@
+                      */
+                     let video_flip = obj.imp().m52xq_video_flip.borrow().clone();
+                     /*
++                     * m52xq (Debian 2026-11-19, checked on the M52): the pictures of the back cameras taken through
++                     * camerabin (Wide, Macro - the main camera goes through m52xq-rawphoto) came out a quarter turn
++                     * counter-clockwise in landscape (display transform 3, video-direction 90l: 1080x1920, EXIF 1):
++                     * the frames reach the picture branch already upright, the turn is needed only by the viewfinder.
++                     * The front camera keeps the viewfinder turn (its pictures go through m52xq-rawphoto anyway).
++                     */
++                    let image_flip = obj.imp().m52xq_image_flip.borrow().clone();
++                    let image_direction = if front { direction } else { "identity" };
++                    /*
+                      * m52xq r107: the recorded frames are the raw sensor frames, not the viewfinder ones: checked on
+                      * the M52 (2026-11-17, frames pulled with ffmpeg -noautorotate) - main camera portrait (t = 0)
+                      * lies a quarter turn counter-clockwise, landscape (t = 3) is upright. The same formula as the
+@@ -1130,6 +1142,8 @@
+                     for flip in obj.imp().m52xq_flips.borrow().iter() {
+                         if video_flip.as_ref() == Some(flip) {
+                             flip.set_property_from_str("video-direction", video_direction);
++                        } else if image_flip.as_ref() == Some(flip) {
++                            flip.set_property_from_str("video-direction", image_direction);
+                         } else {
+                             flip.set_property_from_str("video-direction", direction);
+                         }
+@@ -1139,6 +1153,7 @@
+                         obj.m52xq_apply_crops();
+                     }
+                     log::info!("m52xq: recording frames {video_direction}, orientation tag {orientation}");
++                    log::info!("m52xq: picture frames {image_direction}");
+                 }
+             ),
+         );

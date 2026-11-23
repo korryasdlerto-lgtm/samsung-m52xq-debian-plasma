@@ -1,0 +1,20 @@
+#!/bin/sh
+# M52XQ (Debian Plasma, 2026-11-21): NFC on/off for the "NFC" quick-settings tile.   m52xq-nfc status|on|off|toggle
+# Same commands as pmOS Plasma (v50), but like the NFC tile of Debian Phosh в6 only rfkill: Debian has no neard / nfctool.
+# /dev/rfkill is writable by the active user (uaccess ACL), so no root and no polkit; systemd-rfkill keeps the state over a reboot.
+# While rfkill blocks NFC the s3fwrn5 chip is not brought up (EN low).
+# Full path: plasmashell's PATH has no /usr/sbin (the tile found no rfkill and always showed "off").
+R=/usr/sbin/rfkill
+st() {
+	case "$($R -n -o SOFT,HARD list nfc 2>/dev/null | head -1)" in
+	"unblocked unblocked") echo on ;;
+	*) echo off ;;
+	esac
+}
+case "$1" in
+status) st ;;
+on) $R unblock nfc; st ;;
+off) $R block nfc; st ;;
+toggle) if [ "$(st)" = on ]; then $R block nfc; else $R unblock nfc; fi; st ;;
+*) echo "usage: $0 status|on|off|toggle" >&2; exit 2 ;;
+esac

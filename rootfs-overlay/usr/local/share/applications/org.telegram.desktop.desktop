@@ -1,0 +1,24 @@
+[Desktop Entry]
+Name=Telegram Desktop
+Comment=Official desktop version of Telegram messaging app
+TryExec=telegram-desktop
+# m52xq (Debian 2026-11-19, as pmOS Phosh 2026-11-17): GLib network monitor on kernel routes only (netlink; "base" left Telegram offline on Debian) - the NetworkManager one with its "network changed" at the
+# wake-up from a dark wake made Telegram decline a ringing call at the moment of unlocking
+Exec=env GIO_USE_NETWORK_MONITOR=netlink telegram-desktop -- %u
+Icon=telegram
+Terminal=false
+StartupWMClass=TelegramDesktop
+Type=Application
+Categories=Chat;Network;InstantMessaging;Qt;
+MimeType=x-scheme-handler/tg;x-scheme-handler/tonsite;
+Keywords=tg;chat;im;messaging;messenger;sms;tdesktop;
+Actions=quit;
+DBusActivatable=true
+SingleMainWindow=true
+X-GNOME-UsesNotifications=true
+X-GNOME-SingleWindow=true
+
+[Desktop Action quit]
+Exec=telegram-desktop -quit
+Name=Quit Telegram
+Icon=application-exit

@@ -1,0 +1,315 @@
+#!/usr/bin/python3
+# M52XQ (Phosh): own idle suspend. gnome-settings-daemon (gsd-power) never suspended the phone in 9.5 h on the battery
+# (suspend_stats.success = 0, no inhibitor, Phosh's idle monitor works: a 20 s watch fired in 20 s), so this session
+# service does it: the idle watch of Phosh (org.gnome.Mutter.IdleMonitor, ext-idle-notify of phoc) fires after the time
+# set in Settings ("Automatic suspend", on battery) and the phone is suspended through logind (org.freedesktop.login1
+# Suspend, allowed for the active session). It does not suspend
+#   - on a charger (as the gsd-power settings: only "on battery"),
+#   - while a call exists (ModemManager Call objects that are not terminated),
+#   - while a media player is playing (MPRIS),
+#   - while a "block" inhibitor of logind holds the sleep (e.g. an ssh session, apk): logind refuses the suspend.
+# If the phone wakes up without any user input (modem, alarm, USB) it is suspended again after M52XQ_RESUME_GRACE_S
+# ("dark wake-up": the display that phoc switches on after the resume is switched off at once through
+# org.gnome.Mutter.DisplayConfig PowerSaveMode and kept off until a key / the touchscreen is used or a call arrives;
+# a wake-up by the power key, the volume keys or the touchscreen is not dark).
+# Environment: M52XQ_IDLE_SUSPEND_S overrides the time of the settings (tests).
+import os
+import sys
+import time
+
+import gi
+from gi.repository import Gio, GLib
+
+RESUME_GRACE_S = int(os.environ.get('M52XQ_RESUME_GRACE_S', '8'))
+DARK_S = 0.5    # while the phone is on after a wake-up without the user, switch the display off every DARK_S seconds
+POWER_SCHEMA = 'org.gnome.settings-daemon.plugins.power'
+IDLE_BUS, IDLE_PATH, IDLE_IFACE = 'org.gnome.Mutter.IdleMonitor', '/org/gnome/Mutter/IdleMonitor/Core', 'org.gnome.Mutter.IdleMonitor'
+
+
+def log(msg):
+    print('m52xq-idle-suspend: ' + msg, flush=True)
+
+
+session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+system = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+settings = Gio.Settings.new(POWER_SCHEMA)
+
+state = {'idle': False, 'resumed_at': 0.0, 'active_since_resume': True, 'watch_idle': None, 'watch_active': None,
+         'timeout_s': 0, 'recheck_id': 0, 'dark': False, 'dark_id': 0}
+
+
+def sync_call(conn, bus, path, iface, method, args=None, sig=None, timeout=5000):
+    return conn.call_sync(bus, path, iface, method, GLib.Variant(sig, args) if sig else None, None,
+                          Gio.DBusCallFlags.NONE, timeout, None)
+
+
+def get_prop(conn, bus, path, iface, prop):
+    r = sync_call(conn, bus, path, 'org.freedesktop.DBus.Properties', 'Get', (iface, prop), '(ss)')
+    return r.unpack()[0]
+
+
+def timeout_s():
+    t = os.environ.get('M52XQ_IDLE_SUSPEND_S')
+    if t:
+        return int(t)
+    if settings.get_string('sleep-inactive-battery-type') != 'suspend':
+        return 0
+    return settings.get_int('sleep-inactive-battery-timeout')
+
+
+def on_battery():
+    try:
+        return bool(get_prop(system, 'org.freedesktop.UPower', '/org/freedesktop/UPower', 'org.freedesktop.UPower', 'OnBattery'))
+    except GLib.Error as e:
+        log('UPower: %s' % e.message)
+        return False
+
+
+def call_busy():
+    try:
+        r = sync_call(system, 'org.freedesktop.ModemManager1', '/org/freedesktop/ModemManager1',
+                      'org.freedesktop.DBus.ObjectManager', 'GetManagedObjects')
+    except GLib.Error:
+        return False
+    for path, ifaces in r.unpack()[0].items():
+        c = ifaces.get('org.freedesktop.ModemManager1.Call')
+        if c is not None and c.get('State', 7) not in (0, 7):    # unknown / terminated
+            return True
+    return False
+
+
+def media_playing():
+    try:
+        names = sync_call(session, 'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'ListNames'
+                          ).unpack()[0]
+    except GLib.Error:
+        return False
+    for n in names:
+        if n.startswith('org.mpris.MediaPlayer2.'):
+            try:
+                if get_prop(session, n, '/org/mpris/MediaPlayer2', 'org.mpris.MediaPlayer2.Player', 'PlaybackStatus') == 'Playing':
+                    return True
+            except GLib.Error:
+                pass
+    return False
+
+
+USER_WAKE_IRQ_NAMES = ('pwrkey', 'resin', 'synaptics', 'Volume', 'gpio-keys')
+
+
+def woke_by_user():
+    """The last wake-up IRQ (/sys/power/pm_wakeup_irq) belongs to a key or the touchscreen."""
+    try:
+        irq = open('/sys/power/pm_wakeup_irq').read().strip()
+    except OSError:
+        return False
+    if not irq:
+        return False
+    for line in open('/proc/interrupts'):
+        if line.split(':')[0].strip() == irq:
+            return any(n in line for n in USER_WAKE_IRQ_NAMES)
+    return False
+
+
+def set_power_save(off):
+    """Display off (PowerSaveMode 1) / on (0) through phoc (org.gnome.Mutter.DisplayConfig)."""
+    try:
+        sync_call(session, 'org.gnome.Mutter.DisplayConfig', '/org/gnome/Mutter/DisplayConfig', 'org.freedesktop.DBus.Properties',
+                  'Set', ('org.gnome.Mutter.DisplayConfig', 'PowerSaveMode', GLib.Variant('i', 1 if off else 0)), '(ssv)')
+    except GLib.Error as e:
+        log('PowerSaveMode: %s' % e.message)
+
+
+def dark_tick():
+    """Keep the display off after a wake-up without the user until the user shows up, a call arrives or the phone sleeps."""
+    if not state['dark']:
+        state['dark_id'] = 0
+        return False
+    if call_busy():
+        end_dark('call')
+        return False
+    if screen_on():
+        set_power_save(True)
+    return True
+
+
+def end_dark(why):
+    if state['dark_id']:
+        GLib.source_remove(state['dark_id'])
+        state['dark_id'] = 0
+    if state['dark']:
+        state['dark'] = False
+        set_power_save(False)
+        log('dark wake-up ends (%s): display back on' % why)
+
+
+def screen_on():
+    """The display is on (DPMS "On"): somebody is looking at the phone."""
+    import glob
+    for f in glob.glob('/sys/class/drm/*DSI*/dpms'):
+        try:
+            if open(f).read().strip().lower() == 'on':
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def try_suspend(reason):
+    state['recheck_id'] = 0
+    if not state['idle'] or state['timeout_s'] <= 0:
+        return False
+    # after a wake-up without input the display must be off, otherwise somebody woke the phone with the power key
+    if reason != 'idle' and screen_on():
+        log('display is on after the wake-up, not suspending')
+        return False
+    for why, busy in (('charger', not on_battery()), ('call', call_busy()), ('media playing', media_playing())):
+        if busy:
+            log('not suspending (%s), looking again in 60 s' % why)
+            schedule_recheck(60)
+            return False
+    log('suspending (%s)' % reason)
+    # the display is switched off BEFORE the sleep: after the resume phoc then finds it off and does not flash it
+    # (a wake-up by a key / the touchscreen / a call puts PowerSaveMode back to 0 in on_prepare_for_sleep)
+    set_power_save(True)
+    try:
+        sync_call(system, 'org.freedesktop.login1', '/org/freedesktop/login1', 'org.freedesktop.login1.Manager', 'Suspend',
+                  (False,), '(b)', 20000)
+    except GLib.Error as e:
+        log('suspend refused: %s; looking again in 120 s' % e.message)
+        schedule_recheck(120)
+    return False
+
+
+def schedule_recheck(seconds):
+    if state['recheck_id']:
+        GLib.source_remove(state['recheck_id'])
+    state['recheck_id'] = GLib.timeout_add_seconds(seconds, try_suspend, 'recheck')
+
+
+def on_watch_fired(conn, sender, path, iface, name, params):
+    wid = params.unpack()[0]
+    if wid == state['watch_idle']:
+        state['idle'] = True
+        log('idle for %d s' % state['timeout_s'])
+        add_active_watch()
+        try_suspend('idle')
+    elif wid == state['watch_active']:
+        # the watch of the user's activity fires once: it is registered again when the idle watch fires
+        state['watch_active'] = None
+        state['idle'] = False
+        state['active_since_resume'] = True
+        end_dark('user is active')
+        if state['recheck_id']:
+            GLib.source_remove(state['recheck_id'])
+            state['recheck_id'] = 0
+        log('user is active')
+
+
+def arm():
+    """(Re)register the watches with the current setting."""
+    t = timeout_s()
+    if t != state['timeout_s'] or state['watch_idle'] is None:
+        for key in ('watch_idle', 'watch_active'):
+            if state[key] is not None:
+                try:
+                    sync_call(session, IDLE_BUS, IDLE_PATH, IDLE_IFACE, 'RemoveWatch', (state[key],), '(u)')
+                except GLib.Error:
+                    pass
+                state[key] = None
+        state['timeout_s'] = t
+        if t > 0:
+            state['watch_idle'] = sync_call(session, IDLE_BUS, IDLE_PATH, IDLE_IFACE, 'AddIdleWatch', (t * 1000,), '(t)').unpack()[0]
+            log('idle watch %d: %d s on battery' % (state['watch_idle'], t))
+        else:
+            log('automatic suspend is off in the settings')
+
+
+def add_active_watch():
+    if state['watch_active'] is not None:
+        try:
+            sync_call(session, IDLE_BUS, IDLE_PATH, IDLE_IFACE, 'RemoveWatch', (state['watch_active'],), '(u)')
+        except GLib.Error:
+            pass
+    state['watch_active'] = sync_call(session, IDLE_BUS, IDLE_PATH, IDLE_IFACE, 'AddUserActiveWatch', None).unpack()[0]
+
+
+def irq_snapshot():
+    """{irq: (sum of the counts of all CPUs, 'chip hwirq type name')} from /proc/interrupts"""
+    snap = {}
+    try:
+        for line in open('/proc/interrupts'):
+            tok = line.split()
+            if not tok or not tok[0].endswith(':') or not tok[0][:-1].isdigit():
+                continue
+            n = 0
+            while n + 1 < len(tok) and tok[n + 1].isdigit():
+                n += 1
+            snap[tok[0][:-1]] = (sum(int(x) for x in tok[1:n + 1]), ' '.join(tok[n + 1:]))
+    except OSError:
+        pass
+    return snap
+
+
+def wakeup_snapshot():
+    snap = {}
+    import glob
+    for d in glob.glob('/sys/class/wakeup/wakeup*'):
+        try:
+            snap[open(d + '/name').read().strip()] = int(open(d + '/event_count').read())
+        except OSError:
+            pass
+    return snap
+
+
+def on_prepare_for_sleep(conn, sender, path, iface, name, params):
+    going = params.unpack()[0]
+    if going:
+        state['irq_before'] = irq_snapshot()
+        state['ws_before'] = wakeup_snapshot()
+        state['sleep_at'] = time.time()
+        if state['dark_id']:
+            GLib.source_remove(state['dark_id'])
+            state['dark_id'] = 0
+        state['dark'] = False
+        log('going to sleep')
+        return
+    # what woke the phone: the interrupts and wakeup sources that counted during the sleep
+    before, after = state.get('irq_before', {}), irq_snapshot()
+    diff = sorted(((after[i][0] - before.get(i, (0, ''))[0], i, after[i][1]) for i in after
+                   if after[i][0] - before.get(i, (0, ''))[0] > 0), reverse=True)
+    wb, wa = state.get('ws_before', {}), wakeup_snapshot()
+    wdiff = ['%s +%d' % (k, wa[k] - wb.get(k, 0)) for k in wa if wa[k] - wb.get(k, 0) > 0]
+    log('slept %d s; IRQs during the sleep: %s; wakeup sources: %s' % (
+        time.time() - state.get('sleep_at', time.time()),
+        ', '.join('%s %s +%d' % (i, nm[-34:], d) for d, i, nm in diff[:7]) or '-', ', '.join(wdiff) or '-'))
+    state['resumed_at'] = time.time()
+    state['active_since_resume'] = False
+    log('resumed; looking again in %d s if nobody touched the phone' % RESUME_GRACE_S)
+    # woke up without user input (modem, alarm, USB): suspend again, a user input cancels this (active watch)
+    state['idle'] = True
+    add_active_watch()
+    schedule_recheck(RESUME_GRACE_S)
+    if woke_by_user() or call_busy():
+        set_power_save(False)    # PowerSaveMode may still be 1 from an earlier dark wake-up
+        log('woke up by the user or a call: display stays on')
+    else:
+        state['dark'] = True
+        set_power_save(True)
+        log('dark wake-up: display off')
+        state['dark_id'] = GLib.timeout_add(int(DARK_S * 1000), dark_tick)
+
+
+def main():
+    session.signal_subscribe(IDLE_BUS, IDLE_IFACE, 'WatchFired', IDLE_PATH, None, Gio.DBusSignalFlags.NONE, on_watch_fired)
+    system.signal_subscribe('org.freedesktop.login1', 'org.freedesktop.login1.Manager', 'PrepareForSleep',
+                            '/org/freedesktop/login1', None, Gio.DBusSignalFlags.NONE, on_prepare_for_sleep)
+    settings.connect('changed', lambda *a: arm())
+    state['idle'] = False
+    arm()
+    log('started: on battery %s, idle time %d s' % (on_battery(), state['timeout_s']))
+    GLib.MainLoop().run()
+
+
+if __name__ == '__main__':
+    main()

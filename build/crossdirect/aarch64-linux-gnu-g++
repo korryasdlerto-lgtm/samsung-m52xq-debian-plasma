@@ -1,0 +1,3 @@
+#!/bin/sh
+# m52xq crossdirect: run the x86_64 cross compiler from /native at full host speed (same GCC 16.2, same glibc 2.43)
+LD_LIBRARY_PATH=/native/usr/lib/x86_64-linux-gnu exec /native/usr/bin/aarch64-linux-gnu-g++-16 "$@"

@@ -1,0 +1,43 @@
+{
+    "policies": {
+        "DisableFirefoxScreenshots": true,
+        "DisableFirefoxStudies": true,
+        "DisableTelemetry": true,
+        "DisablePocket": true,
+        "NoDefaultBookmarks": true,
+        "OverrideFirstRunPage": "",
+        "OverridePostUpdatePage": "",
+        "Homepage": {
+            "URL": "about:home",
+            "Locked": false,
+            "StartPage": "homepage"
+        },
+        "FirefoxHome": {
+            "Search": true,
+            "TopSites": false,
+            "Highlights": false,
+            "Pocket": false,
+            "Snippets": false,
+            "Locked": false
+        },
+        "Preferences": {
+            "dom.private-attribution.submission.enabled": {
+                "Value": false,
+                "Status": "locked"
+            }
+        },
+        "UserMessaging": {
+            "WhatsNew": false,
+            "ExtensionRecommendations": false,
+            "FeatureRecommendations": false,
+            "UrlbarInterventions": false,
+            "SkipOnboarding": false
+        },
+        "ExtensionSettings": {
+            "video-bg-play@timdream.org": {
+                "installation_mode": "force_installed",
+                "install_url": "file:///usr/share/m52xq/firefox/video-bg-play@timdream.org.xpi"
+            }
+        }
+    }
+}

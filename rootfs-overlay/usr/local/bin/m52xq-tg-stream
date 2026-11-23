@@ -1,0 +1,22 @@
+#!/bin/sh
+# m52xq (Debian, 2026-11-19): "m52xq-tg-stream sink-inputs|source-outputs" exits 0 if Telegram has such a stream.
+# The OpenAL streams of the Debian telegram-desktop have no application.* properties of its own (only media.role "game",
+# media.name "Playback Stream"); their CLIENT has application.name "telegram-desktop". pmOS Telegram named the streams "Telegram".
+# "m52xq-tg-stream fix-capture": a Telegram recording stream on a MONITOR source (sound of the phone itself; Telegram/OpenAL
+# picked "Monitor of Speaker" now and then: the other side heard noise instead of the voice) is moved to the default source.
+kind=${1:-sink-inputs}
+ids=$(pactl list clients 2>/dev/null | awk '/^Client #/ {id = substr($2, 2)} tolower($0) ~ /application\.(name|process\.binary) = ".*telegram/ {print id}' | sort -u | tr '\n' ' ')
+if [ "$kind" = fix-capture ]; then
+	mons=" $(pactl list short sources 2>/dev/null | awk '$2 ~ /\.monitor$/ {print $1}' | tr '\n' ' ')"
+	def=$(pactl get-default-source 2>/dev/null)
+	case "$def" in ''|*.monitor) exit 0 ;; esac
+	pactl list short source-outputs 2>/dev/null | while read -r so src cl _; do
+		case " $ids" in *" $cl "*) ;; *) continue ;; esac
+		case "$mons" in *" $src "*) pactl move-source-output "$so" "$def" && echo "m52xq-tg-stream: Telegram recording #$so moved from monitor $src to $def" ;; esac
+	done
+	exit 0
+fi
+pactl list "$kind" 2>/dev/null | awk -v ids=" $ids" '
+	tolower($0) ~ /application\.(name|process\.binary) = ".*telegram/ {f = 1}
+	$1 == "Client:" && index(ids, " " $2 " ") {f = 1}
+	END {exit !f}'

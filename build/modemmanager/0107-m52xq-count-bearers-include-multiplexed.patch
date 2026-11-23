@@ -1,0 +1,35 @@
+From: Asdlerto Korry <korryasdlerto@gmail.com>
+Subject: [PATCH] iface-modem: count multiplexed bearers in the ACTIVE/CONNECTED maximum
+
+Backport of the ModemManager 1.25 logic of mm_iface_modem_count_bearers().
+
+On IPA modems (Qualcomm SoC, data only through rmnet multiplexing) the bearer
+list allows 0 non-multiplexed and N multiplexed bearers. On suspend the base
+manager counts the ACTIVE bearers; with mobile data connected that is 1, but
+1.24 compared it with the non-multiplexed maximum (0) only, so
+g_assert (max >= ctx.count) aborted ModemManager every time the phone went to
+sleep with mobile data on. systemd restarted it while the phone was already
+suspending, and incoming calls during that sleep were lost.
+
+1.25 adds the multiplexed maximum for ACTIVE/CONNECTED counts (multiplexed
+bearers are a subset of them); do the same here.
+---
+--- a/src/mm-iface-modem.c	2026-11-20 13:22:06.642991658 +0200
++++ b/src/mm-iface-modem.c	2026-11-20 13:22:06.662993609 +0200
+@@ -6770,10 +6770,13 @@
+         return FALSE;
+     }
+ 
+-    if (flags & MM_IFACE_MODEM_COUNT_BEARERS_FLAG_MULTIPLEXED)
+-        max = mm_bearer_list_get_max_active_multiplexed (list);
+-    else
++    /* If only MULTIPLEXED is requested, only return max multiplexed bearers */
++    if (flags & ~MM_IFACE_MODEM_COUNT_BEARERS_FLAG_MULTIPLEXED)
+         max = mm_bearer_list_get_max_active (list);
++    /* multiplexed is a subset of ACTIVE/CONNECTED */
++    if (flags & (MM_IFACE_MODEM_COUNT_BEARERS_FLAG_ACTIVE | MM_IFACE_MODEM_COUNT_BEARERS_FLAG_CONNECTED |
++                 MM_IFACE_MODEM_COUNT_BEARERS_FLAG_MULTIPLEXED))
++        max += mm_bearer_list_get_max_active_multiplexed (list);
+ 
+     mm_bearer_list_foreach (list, (MMBearerListForeachFunc)bearer_count, &ctx);
+     g_assert (max >= ctx.count);

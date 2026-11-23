@@ -1,0 +1,6 @@
+[Unit]
+Description=M52XQ: save the hotspot name / password from the settings window (m52xq-hotspot-config apply)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/m52xq-hotspot-config apply

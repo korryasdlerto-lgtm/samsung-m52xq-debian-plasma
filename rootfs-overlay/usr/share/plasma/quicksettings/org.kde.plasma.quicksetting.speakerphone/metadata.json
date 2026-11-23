@@ -1,0 +1,10 @@
+{
+    "KPackageStructure": "KPackage/GenericQML",
+    "KPlugin": {
+        "Description": "Sound of a Telegram call (earpiece / loud speaker / headset) for the Samsung M52",
+        "Icon": "audio-speakers-symbolic",
+        "Id": "org.kde.plasma.quicksetting.speakerphone",
+        "License": "GPL-2.0+",
+        "Name": "Speakerphone"
+    }
+}

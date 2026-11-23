@@ -1,0 +1,23 @@
+Description: M52XQ: optionally keep NetworkManager awake over a system suspend
+ On the phone (s2idle, Wi-Fi kept associated with Wake-on-WLAN, modem handled by ModemManager) every suspend put
+ NetworkManager into "asleep" (state DISABLED) and back. Applications (Telegram) took that for a network loss and
+ reconnected all sockets on every sleep and every wake-up; the answers of their servers woke the phone again every
+ ~15 s. With the file /etc/NetworkManager/m52xq-ignore-suspend NetworkManager ignores the logind sleep/resume signal
+ (the power monitor still drops its delay inhibitor at once, so the suspend is not delayed). Remove the file to get
+ the usual behaviour back.
+Author: Asdlerto Korry <korryasdlerto@gmail.com>
+--- a/src/core/nm-manager.c
++++ b/src/core/nm-manager.c
+@@ -7567,6 +7567,12 @@
+     NMManager *self = user_data;
+ 
+     _LOGT(LOGD_SUSPEND, "sleep: received %s signal", is_about_to_suspend ? "sleeping" : "resuming");
++    if (g_file_test("/etc/NetworkManager/m52xq-ignore-suspend", G_FILE_TEST_EXISTS)) {
++        _LOGI(LOGD_SUSPEND,
++              "sleep: m52xq: ignoring the %s signal (/etc/NetworkManager/m52xq-ignore-suspend)",
++              is_about_to_suspend ? "sleeping" : "resuming");
++        return;
++    }
+     _internal_sleep(self, is_about_to_suspend);
+ }
+ 

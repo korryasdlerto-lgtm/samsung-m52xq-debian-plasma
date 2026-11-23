@@ -1,0 +1,4 @@
+# pm-Plasma patches (m52xq, ported to 6.8.3 on 2026-11-14): copied from /root/pmplasma-patches/plasma-nm, applied by quilt after the Debian ones
+mkdir -p debian/patches; touch debian/patches/series
+cp /root/pmplasma-patches/plasma-nm/plasma-nm-0001-m52xq-sim-display-id-by-slot.patch debian/patches/m52xq-plasma-nm-0001-m52xq-sim-display-id-by-slot.patch; grep -qx 'm52xq-plasma-nm-0001-m52xq-sim-display-id-by-slot.patch' debian/patches/series || echo 'm52xq-plasma-nm-0001-m52xq-sim-display-id-by-slot.patch' >> debian/patches/series
+cp /root/pmplasma-patches/plasma-nm/plasma-nm-0002-m52xq-wifi-switch-like-tile-6.8.patch debian/patches/m52xq-plasma-nm-0002-m52xq-wifi-switch-like-tile-6.8.patch; grep -qx 'm52xq-plasma-nm-0002-m52xq-wifi-switch-like-tile-6.8.patch' debian/patches/series || echo 'm52xq-plasma-nm-0002-m52xq-wifi-switch-like-tile-6.8.patch' >> debian/patches/series

@@ -1,0 +1,2 @@
+# m52xq: libcamera software ISP (WirePlumber) needs udmabuf before the seat ACL appears
+KERNEL=="udmabuf", GROUP="video", MODE="0660"
